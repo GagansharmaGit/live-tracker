@@ -1,0 +1,6 @@
+node_modules
+.env
+location_history.db*
+*.db
+*.sqlite
+.DS_Store

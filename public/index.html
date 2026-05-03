@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Real-Time Location Tracking</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      body, html {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+      }
+      #map {
+        height: 100vh;
+        width: 100vw;
+      }
+      .overlay {
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        z-index: 1000;
+        background: white;
+        padding: 15px 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        text-align: center;
+      }
+      .btn {
+        background: #0066cc;
+        color: white;
+        border: none;
+        padding: 10px 15px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+        text-decoration: none;
+      }
+      .btn-danger {
+        background: #cc0000;
+      }
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="overlay" id="auth-overlay">
+      <div id="unauth-view">
+        <p>Login to share and view live locations.</p>
+        <button id="login-btn" class="btn">Login with Konoha OIDC</button>
+      </div>
+      <div id="auth-view" class="hidden">
+        <p>Welcome, <strong id="user-name-display">User</strong>!</p>
+        <p style="font-size: 12px; color: green;">🟢 Sharing Location</p>
+        <a href="/auth/logout" class="btn btn-danger" style="display:inline-block; margin-top:5px;">Logout</a>
+      </div>
+    </div>
+
+    <div id="map"></div>
+    
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="/socket.io/socket.io.js"></script>
+
+    <script>
+      let socket = null;
+      let isAuthenticated = false;
+      let currentUser = null;
+
+      const map = L.map('map').setView([51.505, -0.09], 13);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap',
+      }).addTo(map);
+
+      const remoteMarkers = new Map();
+      let myCurrentLocationMarker = null;
+
+      // Handle login flow via popup
+      document.getElementById('login-btn').addEventListener('click', () => {
+        const width = 500, height = 600;
+        const left = (window.innerWidth / 2) - (width / 2);
+        const top = (window.innerHeight / 2) - (height / 2);
+        window.open('/auth/login', 'OIDC_Login', `width=${width},height=${height},top=${top},left=${left}`);
+      });
+
+      window.addEventListener('message', (event) => {
+        if (event.data === 'location_login_success') {
+          checkAuthAndInitialize();
+        }
+      });
+
+      async function checkAuthAndInitialize() {
+        try {
+          const res = await fetch('/auth/me');
+          const data = await res.json();
+          
+          if (data.authenticated) {
+            isAuthenticated = true;
+            currentUser = data.user;
+            
+            document.getElementById('unauth-view').classList.add('hidden');
+            document.getElementById('auth-view').classList.remove('hidden');
+            document.getElementById('user-name-display').textContent = currentUser.name;
+
+            // Connect socket now that we are authenticated
+            if (!socket) {
+              socket = io();
+              setupSocketListeners();
+            }
+          }
+        } catch (e) {
+          console.error("Auth check failed", e);
+        }
+      }
+
+      function setupSocketListeners() {
+        socket.on('server:location:update', (data) => {
+          const { userId, name, latitude, longitude, timestamp } = data;
+          
+          // Ignore our own updates reflected back
+          if (userId === currentUser.sub) return;
+
+          if (!remoteMarkers.has(userId)) {
+            const marker = L.marker([latitude, longitude]).addTo(map).bindPopup(`<b>${name}</b>`);
+            remoteMarkers.set(userId, { marker, lastUpdate: timestamp });
+          } else {
+            const userObj = remoteMarkers.get(userId);
+            userObj.marker.setLatLng([latitude, longitude]);
+            userObj.lastUpdate = timestamp;
+          }
+        });
+
+        socket.on('server:user:disconnect', (data) => {
+          const { userId } = data;
+          if (remoteMarkers.has(userId)) {
+            map.removeLayer(remoteMarkers.get(userId).marker);
+            remoteMarkers.delete(userId);
+          }
+        });
+      }
+
+      function getUsersCurrentLocation() {
+        return new Promise((res, rej) => {
+          if ('geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(
+              (position) => {
+                res({ latitude: position.coords.latitude, longitude: position.coords.longitude });
+              },
+              (err) => rej(err),
+              { enableHighAccuracy: true }
+            );
+          } else {
+            rej(new Error('Geolocation not available'));
+          }
+        });
+      }
+
+      // Main Location Loop
+      setInterval(async () => {
+        if (!isAuthenticated || !socket) return;
+        
+        try {
+          const { latitude, longitude } = await getUsersCurrentLocation();
+          socket.emit('client:location:update', { latitude, longitude });
+          
+          if (!myCurrentLocationMarker) {
+            myCurrentLocationMarker = L.marker([latitude, longitude]).addTo(map).bindPopup('<b>You are here</b>');
+            map.setView([latitude, longitude], 15); // Auto center on first load
+          } else {
+            myCurrentLocationMarker.setLatLng([latitude, longitude]);
+          }
+        } catch (err) {
+          console.error("Error getting location", err);
+        }
+      }, 5000);
+
+      // Stale User Cleanup (Remove users who haven't updated in 30 seconds)
+      setInterval(() => {
+        const now = Date.now();
+        for (const [userId, userObj] of remoteMarkers.entries()) {
+          if (now - userObj.lastUpdate > 30000) {
+            map.removeLayer(userObj.marker);
+            remoteMarkers.delete(userId);
+          }
+        }
+      }, 10000);
+
+      // Initial check on load
+      checkAuthAndInitialize();
+    </script>
+  </body>
+</html>
