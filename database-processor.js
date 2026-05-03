@@ -2,6 +2,8 @@ import { kafkaClient } from './kafka-client.js';
 import { DatabaseSync } from 'node:sqlite';
 
 const db = new DatabaseSync('./location_history.db');
+
+// Initialize table
 db.exec(`
   CREATE TABLE IF NOT EXISTS location_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -12,11 +14,6 @@ db.exec(`
     longitude REAL,
     timestamp INTEGER
   )
-`);
-
-const insertStmt = db.prepare(`
-  INSERT INTO location_events (event_type, user_id, name, latitude, longitude, timestamp) 
-  VALUES (?, ?, ?, ?, ?, ?)
 `);
 
 async function init() {
@@ -35,7 +32,14 @@ async function init() {
       const data = JSON.parse(message.value.toString());
       
       try {
-        insertStmt.run(
+        // Re-preparing inside the loop prevents the "statement finalized" issue 
+        // that occurs in node:sqlite (experimental) if a previous run had a conflict or state change.
+        const stmt = db.prepare(`
+          INSERT INTO location_events (event_type, user_id, name, latitude, longitude, timestamp) 
+          VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        
+        stmt.run(
           data.type, 
           data.userId, 
           data.name, 
@@ -43,9 +47,10 @@ async function init() {
           data.longitude || null, 
           data.timestamp || Date.now()
         );
+        
         console.log(`[DB Insert]: User ${data.name} - ${data.type}`);
       } catch (err) {
-        console.error("DB Insert Error", err);
+        console.error("DB Insert Error:", err.message);
       }
 
       await heartbeat();
@@ -53,4 +58,4 @@ async function init() {
   });
 }
 
-init();
+init().catch(console.error);
