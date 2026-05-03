@@ -92,5 +92,5 @@ Visit `http://localhost:8000` in your browser.
 - **User Disconnects**: If a user forcefully closes the browser, the socket disconnects and a disconnect event is published. However, as an extra safeguard, the frontend implements a stale marker cleanup that removes markers not updated within 30 seconds.
 
 ## 🎥 Submission Demo
-- **Demo Video (YouTube Unlisted)**: [Insert Link Here]
-- **Public GitHub Repository**: [Insert Link Here]
+- **Demo Video (YouTube Unlisted)**: [youtube video]https://www.youtube.com/watch?v=LgmcCeDBky8
+- **Public GitHub Repository**: [Codebase]https://github.com/GagansharmaGit/live-tracker
